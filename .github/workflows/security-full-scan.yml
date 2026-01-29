@@ -204,6 +204,8 @@ jobs:
           QUAY_ORG: ${{ secrets.QUAY_ORG }}
           QUAY_USER: ${{ secrets.QUAY_USER }}
           QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+          SECURITY_QUAY_ORG: ${{ secrets.SECURITY_QUAY_ORG }}
+          QUAY_REPO: ${{ secrets.QUAY_REPO }}
         run: |
           echo "🔍 Validating Quay.io credentials and namespace..."
 
@@ -220,6 +222,18 @@ jobs:
           else
             QUAY_USERNAME=""
             QUAY_NAMESPACE=""
+          fi
+
+          # Override namespace for security scans if specified
+          if [ -n "$SECURITY_QUAY_ORG" ]; then
+            QUAY_NAMESPACE="$SECURITY_QUAY_ORG"
+          fi
+
+          # Determine repository name
+          if [ -n "$QUAY_REPO" ]; then
+            QUAY_REPO_NAME="$QUAY_REPO"
+          else
+            QUAY_REPO_NAME="${{ github.event.repository.name }}"
           fi
 
           # Warn if both secret schemes are configured
@@ -250,8 +264,9 @@ jobs:
             echo ""
             echo "Setup instructions:"
             echo "  1. Create Quay.io robot account: https://quay.io/organization/<your-org>?tab=robots"
-            echo "  2. Grant write permissions to 'security-scans' repository"
+            echo "  2. Grant write permissions to your organization"
             echo "  3. Add secrets to GitHub repository settings"
+            echo "  4. Repository will be auto-created on first push"
             exit 1
           fi
 
@@ -296,7 +311,7 @@ jobs:
           echo "✅ Quay.io authentication successful"
 
           # Check if repository exists or if we have permission to create it
-          REPO_URL="quay.io/${QUAY_NAMESPACE}/security-scans"
+          REPO_URL="quay.io/${QUAY_NAMESPACE}/${QUAY_REPO_NAME}"
 
           echo ""
           echo "📦 Checking repository access: ${REPO_URL}"
@@ -320,6 +335,7 @@ jobs:
           # Export validated values for use in later steps (avoid recalculation)
           echo "quay_namespace=${QUAY_NAMESPACE}" >> $GITHUB_OUTPUT
           echo "quay_username=${QUAY_USERNAME}" >> $GITHUB_OUTPUT
+          echo "quay_repo_name=${QUAY_REPO_NAME}" >> $GITHUB_OUTPUT
 
           echo ""
           echo "✅ Quay.io validation complete"
@@ -737,10 +753,7 @@ jobs:
           echo "A detailed security report has been generated and will be pushed to Quay.io." >> $GITHUB_STEP_SUMMARY
           echo "Reports are stored securely in Quay.io with RBAC-controlled access." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "To retrieve reports:" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "podman pull quay.io/rhoai-security/scans/${{ github.event.repository.name }}:latest" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "To retrieve reports, use the \`/sec-scan:show-report\` command or see push step output for exact image tags." >> $GITHUB_STEP_SUMMARY
         continue-on-error: true
 
       # ============================================================================
@@ -861,23 +874,25 @@ jobs:
           echo "date_tag=${DATE_TAG}" >> $GITHUB_OUTPUT
           echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
 
-          # Reuse namespace from validation step (already calculated and verified)
+          # Reuse namespace and repo name from validation step (already calculated and verified)
           QUAY_NAMESPACE="${{ steps.validate-quay.outputs.quay_namespace }}"
+          QUAY_REPO_NAME="${{ steps.validate-quay.outputs.quay_repo_name }}"
 
-          # Output QUAY_NAMESPACE for use in push step
+          # Output values for use in push step
           echo "quay_namespace=${QUAY_NAMESPACE}" >> $GITHUB_OUTPUT
+          echo "quay_repo_name=${QUAY_REPO_NAME}" >> $GITHUB_OUTPUT
 
-          # Build image with two tags:
-          # 1. {repo}-{date}-{sha} - timestamp + commit correlation
-          # 2. {repo}-latest - always get most recent
-          BASE_TAG="quay.io/${QUAY_NAMESPACE}/security-scans:${REPO_NAME}"
+          # Build image with two tags (always prefixed with 'scan-' for clarity):
+          # 1. scan-{repo}-{date}-{sha} - timestamp + commit correlation
+          # 2. scan-{repo}-latest - always get most recent
+          BASE_URL="quay.io/${QUAY_NAMESPACE}/${QUAY_REPO_NAME}"
 
-          podman build -t "${BASE_TAG}-${DATE_TAG}-${SHORT_SHA}" .
-          podman tag "${BASE_TAG}-${DATE_TAG}-${SHORT_SHA}" "${BASE_TAG}-latest"
+          podman build -t "${BASE_URL}:scan-${REPO_NAME}-${DATE_TAG}-${SHORT_SHA}" .
+          podman tag "${BASE_URL}:scan-${REPO_NAME}-${DATE_TAG}-${SHORT_SHA}" "${BASE_URL}:scan-${REPO_NAME}-latest"
 
           echo "📦 Built container image with tags:"
-          echo "   - ${BASE_TAG}-${DATE_TAG}-${SHORT_SHA} (timestamp + commit)"
-          echo "   - ${BASE_TAG}-latest (most recent)"
+          echo "   - ${BASE_URL}:scan-${REPO_NAME}-${DATE_TAG}-${SHORT_SHA} (timestamp + commit)"
+          echo "   - ${BASE_URL}:scan-${REPO_NAME}-latest (most recent)"
         continue-on-error: true
 
       - name: Push reports to Quay.io
@@ -887,37 +902,38 @@ jobs:
         run: |
           # Reuse validated credentials from validate-quay step
           QUAY_USERNAME="${{ steps.validate-quay.outputs.quay_username }}"
-          QUAY_NAMESPACE="${{ steps.validate-quay.outputs.quay_namespace }}"
+          QUAY_NAMESPACE="${{ steps.package-reports.outputs.quay_namespace }}"
+          QUAY_REPO_NAME="${{ steps.package-reports.outputs.quay_repo_name }}"
 
           REPO_NAME="${{ github.event.repository.name }}"
           DATE_TAG="${{ steps.package-reports.outputs.date_tag }}"
           SHORT_SHA="${{ steps.package-reports.outputs.short_sha }}"
 
-          BASE_TAG="quay.io/${QUAY_NAMESPACE}/security-scans:${REPO_NAME}"
+          BASE_URL="quay.io/${QUAY_NAMESPACE}/${QUAY_REPO_NAME}"
 
           # Login to Quay.io (credentials already validated in validate-quay step)
           echo "$QUAY_TOKEN" | podman login quay.io -u "$QUAY_USERNAME" --password-stdin
 
-          # Push both tags
-          podman push "${BASE_TAG}-${DATE_TAG}-${SHORT_SHA}"
-          podman push "${BASE_TAG}-latest"
+          # Push both tags (always prefixed with 'scan-')
+          podman push "${BASE_URL}:scan-${REPO_NAME}-${DATE_TAG}-${SHORT_SHA}"
+          podman push "${BASE_URL}:scan-${REPO_NAME}-latest"
 
           echo "✅ Reports pushed to Quay.io:"
-          echo "   - ${BASE_TAG}-${DATE_TAG}-${SHORT_SHA} (timestamp + commit)"
-          echo "   - ${BASE_TAG}-latest (most recent)"
+          echo "   - ${BASE_URL}:scan-${REPO_NAME}-${DATE_TAG}-${SHORT_SHA} (timestamp + commit)"
+          echo "   - ${BASE_URL}:scan-${REPO_NAME}-latest (most recent)"
           echo ""
           echo "📥 To retrieve reports, use the /get-report command:"
           echo "   /get-report"
           echo ""
           echo "Or manually:"
           echo "   # Pull latest scan:"
-          echo "   podman pull ${BASE_TAG}-latest"
+          echo "   podman pull ${BASE_URL}:scan-${REPO_NAME}-latest"
           echo ""
           echo "   # Pull specific scan by timestamp + commit:"
-          echo "   podman pull ${BASE_TAG}-${DATE_TAG}-${SHORT_SHA}"
+          echo "   podman pull ${BASE_URL}:scan-${REPO_NAME}-${DATE_TAG}-${SHORT_SHA}"
           echo ""
           echo "   # Extract reports:"
-          echo "   CONTAINER=\$(podman create ${BASE_TAG}-latest)"
+          echo "   CONTAINER=\$(podman create ${BASE_URL}:scan-${REPO_NAME}-latest)"
           echo "   podman cp \$CONTAINER:/report.md ./security-report.md"
           echo "   podman cp \$CONTAINER:/summary.json ./security-summary.json"
           echo "   podman rm \$CONTAINER"
@@ -927,10 +943,10 @@ jobs:
           echo "   Consider configuring tag lifecycle policies in Quay.io repository settings:"
           echo ""
           echo "   Recommended policy:"
-          echo "   - Keep timestamped tags (${REPO_NAME}-YYYYMMDD-HHMMSS-SHA) for 90 days"
-          echo "   - Keep 'latest' tag indefinitely"
+          echo "   - Keep timestamped tags (scan-${REPO_NAME}-YYYYMMDD-HHMMSS-SHA) for 90 days"
+          echo "   - Keep scan-${REPO_NAME}-latest tag indefinitely"
           echo ""
-          echo "   Configure at: https://quay.io/repository/${QUAY_NAMESPACE}/security-scans?tab=settings"
+          echo "   Configure at: https://quay.io/repository/${QUAY_NAMESPACE}/${QUAY_REPO_NAME}?tab=settings"
           echo "   Settings → Repository Tags → Tag Expiration"
 
       # ============================================================================
