@@ -1,5 +1,8 @@
 name: Security Full Codebase Scan
 
+# Plugin Version: 2.3.0
+# DO NOT REMOVE: This comment is used for version detection during plugin updates
+
 # This workflow performs comprehensive security scanning on the ENTIRE codebase.
 # Complements CodeRabbit's PR incremental scanning with full repository validation.
 #
@@ -229,11 +232,13 @@ jobs:
             QUAY_NAMESPACE="$SECURITY_QUAY_ORG"
           fi
 
-          # Determine repository name
+          # Determine repository name (use centralized security-scans repo)
+          # All security scan reports go to the same Quay.io repository with different tags
+          # This simplifies permission management (one robot account, one repository)
           if [ -n "$QUAY_REPO" ]; then
             QUAY_REPO_NAME="$QUAY_REPO"
           else
-            QUAY_REPO_NAME="${{ github.event.repository.name }}"
+            QUAY_REPO_NAME="security-scans"  # Centralized repository for all security scans
           fi
 
           # Warn if both secret schemes are configured
@@ -598,15 +603,83 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run kube-linter
+      # ============================================================================
+      # KUBERNETES MANIFEST DISCOVERY - Intelligent Path Detection
+      # ============================================================================
+      # Purpose: Dynamically discover all Kubernetes operator directories
+      # Strategy: Find kustomization.yaml files, exclude test paths
+      # Feeds: kube-linter and RBAC analyzer
+      # Benefit: Works with any repository structure (no hardcoded paths)
+
+      - name: Discover Kubernetes manifest directories
         if: hashFiles('go.mod') != '' || hashFiles('Makefile') != ''
+        id: discover-manifests
+        run: |
+          echo "Discovering Kubernetes manifest directories..."
+
+          # Find all kustomization files, excluding test paths
+          # Note: GNU find doesn't follow symlinks by default (unlike BSD find)
+          find . -type f \( -name "kustomization.yaml" -o -name "kustomize.yaml" \) \
+            -not -path "*/test/*" \
+            -not -path "*/tests/*" \
+            -not -path "*/examples/*" \
+            -not -path "*/docs/*" \
+            -not -path "*/vendor/*" \
+            -not -path "*/.github/*" \
+            -not -path "*/hack/*" \
+            > discovered-kustomizations.txt
+
+          # Extract parent directories (the directories containing kustomization.yaml)
+          manifest_dirs=$(cat discovered-kustomizations.txt | xargs -I {} dirname {} | sort -u)
+
+          # Log discoveries for transparency
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Found Kubernetes manifest directories:"
+          echo "$manifest_dirs"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Save to file for other steps
+          echo "$manifest_dirs" > manifest-dirs.txt
+
+          # Set output for conditional execution
+          count=$(echo "$manifest_dirs" | grep -c . || echo 0)
+          echo "count=$count" >> $GITHUB_OUTPUT
+
+          if [ $count -eq 0 ]; then
+            echo "⚠️  No Kubernetes manifests found - skipping kube-linter and RBAC analyzer"
+          else
+            echo "✅ Found $count manifest director(ies)"
+          fi
+
+      - name: Run kube-linter
+        if: steps.discover-manifests.outputs.count > 0
         id: kubelinter
         timeout-minutes: 5
         run: |
           # Prepare kustomize and render manifests
           make prepare
+
+          # Build manifests from each discovered directory
           TMP_FILE=$(mktemp /tmp/kube-lint.XXXXXX.yaml)
-          ./bin/kustomize build config/manifests > "$TMP_FILE"
+
+          echo "Building manifests from discovered directories..."
+          # Read manifest-dirs.txt line by line to handle paths with spaces
+          while IFS= read -r dir; do
+            echo "━━━ Rendering: $dir"
+            ./bin/kustomize build "$dir" >> "$TMP_FILE" || {
+              echo "::warning::Failed to render $dir - skipping"
+              continue
+            }
+            echo "✅ Rendered: $dir"
+          done < manifest-dirs.txt
+
+          # Validate we have content
+          if [ ! -s "$TMP_FILE" ]; then
+            echo "⚠️  No manifests rendered - skipping kube-linter"
+            exit 0
+          fi
+
+          echo "Combined manifest size: $(wc -l < "$TMP_FILE") lines"
 
           # Run kube-linter with JSON output for comprehensive report
           # Capture exit code separately from output to distinguish scanner errors from findings
@@ -684,38 +757,77 @@ jobs:
       # Complement: Semgrep catches individual RBAC issues, this finds relationships
 
       - name: Setup Python for RBAC Analysis
-        if: hashFiles('.github/scripts/rbac-analyzer.py') != '' || hashFiles('config/**/*.yaml', 'manifests/**/*.yaml', 'kustomize/**/*.yaml', 'overlays/**/*.yaml', 'base/**/*.yaml') != ''
+        if: steps.discover-manifests.outputs.count > 0 && hashFiles('.github/scripts/rbac-analyzer.py') != ''
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548  # v6.1.0
         with:
           python-version: '3.11'
 
       - name: Install PyYAML for RBAC analyzer
-        if: hashFiles('.github/scripts/rbac-analyzer.py') != '' || hashFiles('config/**/*.yaml', 'manifests/**/*.yaml', 'kustomize/**/*.yaml', 'overlays/**/*.yaml', 'base/**/*.yaml') != ''
+        if: steps.discover-manifests.outputs.count > 0 && hashFiles('.github/scripts/rbac-analyzer.py') != ''
         run: python -m pip install "pyyaml==6.0.3"
 
       - name: Run RBAC Privilege Chain Analyzer (Public Version)
-        if: hashFiles('.github/scripts/rbac-analyzer.py') != '' || hashFiles('config/**/*.yaml', 'manifests/**/*.yaml', 'kustomize/**/*.yaml', 'overlays/**/*.yaml', 'base/**/*.yaml') != ''
+        if: steps.discover-manifests.outputs.count > 0 && hashFiles('.github/scripts/rbac-analyzer.py') != ''
         id: rbac_analyzer
         run: |
+          echo "Running RBAC analysis on discovered directories..."
           # Generate public version (no attack scenarios) for artifacts
-          python .github/scripts/rbac-analyzer.py . --fail-on HIGH 2>&1 | tee rbac-analysis.md
+          # Pass directories as separate arguments (robust for paths with spaces)
+          python .github/scripts/rbac-analyzer.py $(cat manifest-dirs.txt | xargs) --fail-on HIGH 2>&1 | tee rbac-analysis.md
           echo "## 🔐 RBAC Privilege Chain Analysis (Public)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           cat rbac-analysis.md >> $GITHUB_STEP_SUMMARY
         continue-on-error: true
 
       - name: Generate RBAC Analysis with Attack Scenarios (Private Version)
-        if: always() && (hashFiles('.github/scripts/rbac-analyzer.py') != '' || hashFiles('config/**/*.yaml', 'manifests/**/*.yaml', 'kustomize/**/*.yaml', 'overlays/**/*.yaml', 'base/**/*.yaml') != '')
+        if: always() && steps.discover-manifests.outputs.count > 0 && hashFiles('.github/scripts/rbac-analyzer.py') != ''
         id: rbac_analyzer_private
         run: |
           # Generate private version with detailed attack scenarios for security advisory
-          python .github/scripts/rbac-analyzer.py . --fail-on HIGH --include-attack-scenarios 2>&1 | tee rbac-analysis-private.md
+          # Pass directories as separate arguments (robust for paths with spaces)
+          python .github/scripts/rbac-analyzer.py $(cat manifest-dirs.txt | xargs) --fail-on HIGH --include-attack-scenarios 2>&1 | tee rbac-analysis-private.md
           echo "✅ Private RBAC analysis with attack scenarios generated (for security advisory)"
         continue-on-error: true
 
       # NOTE: RBAC analysis report upload to artifacts removed for security
       # Reports are stored in Quay.io with RBAC-controlled access
       # Use /get-report command to retrieve reports
+
+      # ============================================================================
+      # DEPENDENCY VULNERABILITY SCANNING
+      # ============================================================================
+
+      - name: Run govulncheck (Go dependency scanner)
+        if: always() && hashFiles('go.mod') != ''
+        id: govulncheck
+        run: |
+          echo "Found go.mod, running govulncheck..."
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck -format sarif ./... > govulncheck.sarif 2>&1 || true
+          echo "✅ Go dependency scan complete"
+        continue-on-error: true
+
+      - name: Create empty govulncheck output if no Go project
+        if: always() && hashFiles('go.mod') == ''
+        run: |
+          echo "No go.mod found, skipping Go dependency scan"
+          echo '{"version":"2.1.0","runs":[{"results":[]}]}' > govulncheck.sarif
+
+      - name: Run pip-audit (Python dependency scanner)
+        if: always() && (hashFiles('requirements.txt') != '' || hashFiles('setup.py') != '' || hashFiles('pyproject.toml') != '')
+        id: pip_audit
+        run: |
+          echo "Found Python dependencies, running pip-audit..."
+          pip install pip-audit
+          pip-audit --format sarif --output pip-audit.sarif || true
+          echo "✅ Python dependency scan complete"
+        continue-on-error: true
+
+      - name: Create empty pip-audit output if no Python project
+        if: always() && hashFiles('requirements.txt') == '' && hashFiles('setup.py') == '' && hashFiles('pyproject.toml') == ''
+        run: |
+          echo "No Python dependencies found, skipping pip-audit scan"
+          echo '{"version":"2.1.0","runs":[{"results":[]}]}' > pip-audit.sarif
 
       # ============================================================================
       # COMPREHENSIVE SECURITY REPORT GENERATION
@@ -887,8 +999,22 @@ jobs:
           # 2. scan-{repo}-latest - always get most recent
           BASE_URL="quay.io/${QUAY_NAMESPACE}/${QUAY_REPO_NAME}"
 
+          # Temporarily rename .dockerignore to prevent it from filtering security reports
+          # Some repositories have aggressive .dockerignore rules (e.g., **/*.md) that would
+          # exclude security-report.md and other report files from the container build context
+          if [ -f .dockerignore ]; then
+            mv .dockerignore .dockerignore.bak
+            echo "ℹ️  Temporarily renamed .dockerignore to prevent filtering report files"
+          fi
+
           podman build -t "${BASE_URL}:scan-${REPO_NAME}-${DATE_TAG}-${SHORT_SHA}" .
           podman tag "${BASE_URL}:scan-${REPO_NAME}-${DATE_TAG}-${SHORT_SHA}" "${BASE_URL}:scan-${REPO_NAME}-latest"
+
+          # Restore .dockerignore
+          if [ -f .dockerignore.bak ]; then
+            mv .dockerignore.bak .dockerignore
+            echo "✅ Restored .dockerignore"
+          fi
 
           echo "📦 Built container image with tags:"
           echo "   - ${BASE_URL}:scan-${REPO_NAME}-${DATE_TAG}-${SHORT_SHA} (timestamp + commit)"
@@ -991,6 +1117,8 @@ jobs:
           ACTIONLINT_OUTCOME: ${{ steps.actionlint.outcome }}
           KUBELINTER_OUTCOME: ${{ steps.kubelinter.outcome }}
           RBAC_OUTCOME: ${{ steps.rbac_analyzer.outcome }}
+          GOVULNCHECK_OUTCOME: ${{ steps.govulncheck.outcome }}
+          PIPAUDIT_OUTCOME: ${{ steps.pip_audit.outcome }}
         run: |
           # Function to extract severity summary from JSON (robust parsing with jq)
           get_severity_badge() {
@@ -1144,6 +1272,16 @@ jobs:
           status_result=$(get_status "$RBAC_OUTCOME" "rbac-analysis.md")
           severity_summary=$(get_severity_badge "RBAC Analyzer")
           echo "| RBAC Analyzer | Privilege chain analysis | ${status_result%%|*} | ${status_result##*|}${severity_summary} |" >> $GITHUB_STEP_SUMMARY
+
+          # govulncheck
+          status_result=$(get_status "$GOVULNCHECK_OUTCOME" "govulncheck.sarif")
+          severity_summary=$(get_severity_badge "govulncheck")
+          echo "| govulncheck | Go dependency vulnerabilities | ${status_result%%|*} | ${status_result##*|}${severity_summary} |" >> $GITHUB_STEP_SUMMARY
+
+          # pip-audit
+          status_result=$(get_status "$PIPAUDIT_OUTCOME" "pip-audit.sarif")
+          severity_summary=$(get_severity_badge "pip-audit")
+          echo "| pip-audit | Python dependency vulnerabilities | ${status_result%%|*} | ${status_result##*|}${severity_summary} |" >> $GITHUB_STEP_SUMMARY
 
           # Overall status
           echo "" >> $GITHUB_STEP_SUMMARY

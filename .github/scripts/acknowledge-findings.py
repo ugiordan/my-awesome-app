@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Plugin Version: 2.3.0
+# DO NOT REMOVE: This comment is used for version detection during plugin updates
 """
 Interactive Security Findings Acknowledgment Tool
 
@@ -10,7 +12,7 @@ Usage:
     python .github/scripts/acknowledge-findings.py --tool gitleaks
     python .github/scripts/acknowledge-findings.py --team security-team
 
-Supports all 9 security tools:
+Supports all 11 security tools:
     - Gitleaks (secrets)
     - TruffleHog (verified credentials)
     - Semgrep (SAST)
@@ -20,6 +22,8 @@ Supports all 9 security tools:
     - actionlint (GitHub Actions)
     - kube-linter (Kubernetes manifests)
     - RBAC Analyzer (privilege chains)
+    - govulncheck (Go dependencies)
+    - pip-audit (Python dependencies)
 """
 
 import json
@@ -58,7 +62,9 @@ class FindingAcknowledger:
             'yamllint': 'yamllint.txt',
             'actionlint': 'actionlint.txt',
             'kube-linter': 'kube-linter.json',
-            'rbac-analyzer': 'rbac-analysis.md'
+            'rbac-analyzer': 'rbac-analysis.md',
+            'govulncheck': 'govulncheck.sarif',
+            'pip-audit': 'pip-audit.sarif'
         }
 
         found = {}
@@ -84,7 +90,9 @@ class FindingAcknowledger:
             'yamllint': [],
             'actionlint': [],
             'kube-linter': [],
-            'rbac-analyzer': []
+            'rbac-analyzer': [],
+            'govulncheck': [],
+            'pip-audit': []
         }
 
     def _validate_baseline_schema(self, baseline_data: Dict) -> bool:
@@ -114,7 +122,8 @@ class FindingAcknowledger:
 
         # All tool keys should be lists if present
         tool_keys = ['gitleaks', 'trufflehog', 'semgrep', 'shellcheck',
-                     'hadolint', 'yamllint', 'actionlint', 'kube-linter', 'rbac-analyzer']
+                     'hadolint', 'yamllint', 'actionlint', 'kube-linter', 'rbac-analyzer',
+                     'govulncheck', 'pip-audit']
 
         for tool_key in tool_keys:
             if tool_key in baseline_data:
