@@ -1,0 +1,12 @@
+rules:
+  - id: test-hardcoded-password
+    languages: [generic]
+    severity: ERROR
+    message: |
+      TEST RULE: Hardcoded password detected. This is a test rule from the central coderabbit repo.
+      If you see this comment on a PR, it means semgrep config inheritance from the central repo WORKS.
+    patterns:
+      - pattern-regex: '(?i)password\s*[:=]\s*["\'][^"'\'']{4,}["\']'
+    metadata:
+      cwe: "CWE-798"
+      category: "security"
