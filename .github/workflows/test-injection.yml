@@ -1,0 +1,23 @@
+# Test workflow to trigger GitHub Actions semgrep rules
+name: Test GHA Injection Detection
+
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+
+jobs:
+  unsafe-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head (UNSAFE)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # Rule: github-actions-script-injection
+      - name: Log PR title (UNSAFE)
+        run: echo "Processing PR: ${{ github.event.pull_request.title }}"
+
+      - name: Log PR body (UNSAFE)
+        run: |
+          echo "Description: ${{ github.event.pull_request.body }}"
