@@ -1,0 +1,17 @@
+# CODEOWNERS - Security scanning infrastructure
+# Changes to security config require security team review
+#
+# For RHOAI repos, this will be set to the security team:
+#   @opendatahub-io/rhoai-security
+
+# Security scanning workflow and configs
+.github/workflows/security-full-scan.yml @ugiordan
+.github/config/semgrep.yaml              @ugiordan
+.github/config/security-baseline.yaml    @ugiordan
+.github/scripts/                         @ugiordan
+
+# Secrets baseline
+.gitleaksignore                          @ugiordan
+
+# CODEOWNERS itself
+CODEOWNERS                               @ugiordan
