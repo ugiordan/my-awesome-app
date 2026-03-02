@@ -7,14 +7,13 @@
 #   - Python (ML/Data Science services and pipelines)
 #   - TypeScript / JavaScript (React frontends)
 #   - YAML (Kubernetes manifests, GitHub Actions workflows)
-#   - Generic patterns (secrets detection across all file types)
 #
 # Semgrep automatically skips rules whose language is not present in the
 # scanned repository, so it is safe to include all rules in every repo.
 #
 # Deduplicated from per-language templates:
 #   semgrep-kubernetes-operator.yaml, semgrep-python.yaml,
-#   semgrep-typescript.yaml, semgrep-generic.yaml
+#   semgrep-typescript.yaml
 
 rules:
 
