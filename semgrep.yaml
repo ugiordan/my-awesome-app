@@ -267,6 +267,138 @@ rules:
       cwe: "CWE-269"
       category: "security"
 
+  - id: k8s-rbac-cluster-admin-binding
+    languages: [yaml]
+    severity: WARNING
+    message: |
+      Binding to cluster-admin detected (CWE-269).
+
+      The cluster-admin ClusterRole grants unrestricted access to ALL resources in ALL namespaces.
+      This is almost never needed for application workloads.
+
+      Remediation: Create a custom ClusterRole with least-privilege permissions:
+        kind: ClusterRole
+        rules:
+          - apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["get", "list", "watch"]
+    patterns:
+      - pattern: |
+          roleRef:
+            name: cluster-admin
+            ...
+    metadata:
+      cwe: "CWE-269"
+      category: "security"
+
+  - id: k8s-rbac-broad-subject
+    languages: [yaml]
+    severity: ERROR
+    message: |
+      RBAC binding to system:authenticated or system:unauthenticated (CWE-269).
+
+      These groups include ALL authenticated/unauthenticated users in the cluster.
+      Binding to these grants access to every user, including service accounts
+      from all namespaces.
+
+      Remediation: Bind to specific ServiceAccounts, Users, or Groups instead.
+    patterns:
+      - pattern-either:
+          - pattern: |
+              subjects:
+                - kind: Group
+                  name: system:authenticated
+          - pattern: |
+              subjects:
+                - kind: Group
+                  name: system:unauthenticated
+    metadata:
+      cwe: "CWE-269"
+      category: "security"
+
+  - id: k8s-rbac-create-persistentvolumes
+    languages: [yaml]
+    severity: WARNING
+    message: |
+      Permission to create PersistentVolumes can enable host-level privilege escalation (CWE-269).
+
+      A ClusterRole with create access to PersistentVolumes can provision hostPath PVs,
+      allowing pods to mount arbitrary host directories.
+
+      Remediation: Restrict PV creation to cluster administrators only.
+      Use PersistentVolumeClaims for application workloads.
+    patterns:
+      - pattern: |
+          kind: ClusterRole
+          ...
+          rules:
+            - ...
+              resources:
+                - persistentvolumes
+              ...
+              verbs:
+                - create
+    metadata:
+      cwe: "CWE-269"
+      category: "security"
+
+  - id: k8s-rbac-aggregated-clusterrole
+    languages: [yaml]
+    severity: INFO
+    message: |
+      Aggregated ClusterRole detected.
+
+      Review aggregation selectors carefully to prevent unintended permission grants.
+      Aggregated roles can accumulate unexpected permissions if selectors are too broad.
+    patterns:
+      - pattern: |
+          aggregationRule:
+            ...
+      - pattern-inside: |
+          kind: ClusterRole
+          ...
+    metadata:
+      category: "security"
+      note: "Not necessarily dangerous, but aggregated roles can accumulate unexpected permissions if selectors are too broad"
+
+  - id: k8s-rbac-secrets-cluster-access
+    languages: [yaml]
+    severity: WARNING
+    message: |
+      ClusterRole grants secret access (get/list/watch) across all namespaces (CWE-200).
+
+      Secrets may contain credentials, TLS certificates, and other sensitive data.
+      Cluster-wide access allows reading secrets from all namespaces.
+
+      Remediation: Use namespace-scoped Role instead of ClusterRole for secrets access
+      unless cross-namespace access is explicitly required.
+    patterns:
+      - pattern: |
+          resources:
+            - secrets
+      - pattern-either:
+          - pattern-inside: |
+              kind: ClusterRole
+              ...
+              rules:
+                - verbs:
+                    - get
+          - pattern-inside: |
+              kind: ClusterRole
+              ...
+              rules:
+                - verbs:
+                    - list
+          - pattern-inside: |
+              kind: ClusterRole
+              ...
+              rules:
+                - verbs:
+                    - watch
+    metadata:
+      cwe: "CWE-200"
+      category: "security"
+
   # ==========================================================================
   # SECTION 3: KUBERNETES CONTAINER SECURITY
   # ==========================================================================
@@ -399,6 +531,62 @@ rules:
       (?i)^[[:space:]]*(password|passwd|secret|token|api[_-]?key|private[_-]?key):[[:space:]]*["']?[^"'\s]{8,}
     metadata:
       cwe: "CWE-798"
+      category: "security"
+
+  - id: k8s-pod-automount-token
+    languages: [yaml]
+    severity: WARNING
+    message: |
+      Pod explicitly enables automountServiceAccountToken (CWE-200).
+
+      When enabled, the ServiceAccount token is mounted into the pod at
+      /var/run/secrets/kubernetes.io/serviceaccount/token. If the pod is
+      compromised, the attacker can use this token to access the Kubernetes API.
+
+      Remediation: Set automountServiceAccountToken: false if the pod doesn't
+      need Kubernetes API access (most application pods don't).
+    patterns:
+      - pattern: |
+          automountServiceAccountToken: true
+      - pattern-inside: |
+          kind: Pod
+          ...
+    metadata:
+      cwe: "CWE-200"
+      category: "security"
+
+  - id: k8s-pod-default-serviceaccount
+    languages: [yaml]
+    severity: WARNING
+    message: |
+      Pod uses default ServiceAccount (CWE-250).
+
+      The default ServiceAccount may have more permissions than needed.
+      Each workload should use a dedicated ServiceAccount with minimal RBAC
+      permissions following the principle of least privilege.
+
+      Remediation: Create a dedicated ServiceAccount:
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: my-app-sa
+    pattern-either:
+      - pattern: |
+          kind: Pod
+          ...
+          spec:
+            ...
+            serviceAccountName: default
+      - patterns:
+          - pattern: |
+              kind: Pod
+              ...
+              spec:
+                ...
+          - pattern-not: |
+              serviceAccountName: $SA
+    metadata:
+      cwe: "CWE-250"
       category: "security"
 
   # ==========================================================================
@@ -774,6 +962,34 @@ rules:
         - "**/vendor/**"
     metadata:
       cwe: "CWE-326"
+      category: "security"
+
+  - id: go-http-client-no-timeout
+    languages: [go]
+    severity: WARNING
+    message: |
+      HTTP client without timeout can hang indefinitely (CWE-400).
+
+      An http.Client without an explicit Timeout will wait forever for a response,
+      which can exhaust goroutines and file descriptors under load or network issues.
+
+      Remediation: Always set a Timeout:
+        client := &http.Client{
+          Timeout: 30 * time.Second,
+        }
+    patterns:
+      - pattern: |
+          &http.Client{
+            ...
+          }
+      - pattern-not: |
+          &http.Client{
+            ...,
+            Timeout: ...,
+            ...
+          }
+    metadata:
+      cwe: "CWE-400"
       category: "security"
 
   # ==========================================================================
@@ -1412,4 +1628,82 @@ rules:
           }
     metadata:
       cwe: "CWE-942"
+      category: "security"
+
+  # ==========================================================================
+  # SECTION 8: DOCKERFILE SECURITY
+  # ==========================================================================
+
+  - id: dockerfile-latest-tag
+    languages: [dockerfile]
+    severity: WARNING
+    message: |
+      Using 'latest' tag is not recommended for reproducibility.
+
+      The :latest tag is mutable and can point to different images over time,
+      causing builds to be non-reproducible and potentially introducing
+      breaking changes or vulnerabilities.
+
+      Remediation: Pin to a specific version:
+        FROM registry/image:v1.2.3
+    pattern-regex: 'FROM\s+[^:]+:latest'
+    metadata:
+      category: "security"
+
+  - id: dockerfile-secret-in-env
+    languages: [dockerfile]
+    severity: ERROR
+    message: |
+      Hardcoded secret in Dockerfile ENV instruction (CWE-798).
+
+      ENV values are baked into image layers and visible via:
+        - docker history
+        - docker inspect
+        - Container runtime metadata
+
+      Remediation: Use build args with --secret flag (BuildKit) or runtime env vars:
+        # Build-time: docker build --secret id=mysecret,src=secret.txt
+        RUN --mount=type=secret,id=mysecret cat /run/secrets/mysecret
+    pattern-regex: 'ENV\s+(PASSWORD|SECRET|TOKEN|API_KEY)\s*=\s*.+'
+    metadata:
+      cwe: "CWE-798"
+      category: "security"
+
+  # ==========================================================================
+  # SECTION 9: SHELL SCRIPT SECURITY
+  # ==========================================================================
+
+  - id: shell-eval-injection
+    languages: [bash, sh]
+    severity: ERROR
+    message: |
+      Use of 'eval' is dangerous and can lead to code injection (CWE-94).
+
+      eval executes its arguments as a shell command, which can be exploited
+      if any part of the input comes from untrusted sources.
+
+      Remediation: Avoid eval. Use arrays for dynamic commands:
+        # Instead of: eval "$cmd"
+        # Use: "${cmd_array[@]}"
+    pattern-regex: 'eval\s+'
+    metadata:
+      cwe: "CWE-94"
+      category: "security"
+
+  - id: shell-unquoted-var-in-dangerous-cmd
+    languages: [bash, sh]
+    severity: ERROR
+    message: |
+      Unquoted variable in dangerous command - potential command injection (CWE-78).
+
+      Unquoted variables in commands like rm, cp, mv, chmod, chown, kill undergo
+      word splitting and glob expansion. A filename with spaces or special characters
+      can cause unintended behavior or arbitrary file operations.
+
+      Remediation: Always quote variables in file operations:
+        rm "$FILE"         # correct
+        rm $FILE           # dangerous
+    pattern-regex: '(rm|cp|mv|eval|chmod|chown|kill|pkill)\s+[^|;]*(?<!["''\\])\$[A-Za-z_][A-Za-z0-9_]*'
+    metadata:
+      cwe: "CWE-78"
       category: "security"
