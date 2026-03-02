@@ -746,14 +746,14 @@ rules:
             raise ValueError("DATABASE_PASSWORD not set")
     patterns:
       - pattern-either:
-          - pattern: password = "..."
-          - pattern: PASSWORD = "..."
-          - pattern: api_key = "..."
-          - pattern: API_KEY = "..."
-          - pattern: secret = "..."
-          - pattern: SECRET = "..."
-          - pattern: token = "..."
-          - pattern: TOKEN = "..."
+          - pattern: password = $VALUE
+          - pattern: PASSWORD = $VALUE
+          - pattern: api_key = $VALUE
+          - pattern: API_KEY = $VALUE
+          - pattern: secret = $VALUE
+          - pattern: SECRET = $VALUE
+          - pattern: token = $VALUE
+          - pattern: TOKEN = $VALUE
       - metavariable-pattern:
           metavariable: $VALUE
           patterns:
@@ -1013,10 +1013,11 @@ rules:
             ALLOWED_ATTR: ['href']
           })
         }} />
-    pattern: |
-      dangerouslySetInnerHTML={{ __html: $HTML }}
-    pattern-not: |
-      dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize($HTML) }}
+    patterns:
+      - pattern: |
+          dangerouslySetInnerHTML={{ __html: $HTML }}
+      - pattern-not: |
+          dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize($HTML) }}
     metadata:
       cwe: "CWE-79"
       owasp: "A03:2021 - Injection"
