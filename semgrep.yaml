@@ -399,6 +399,29 @@ rules:
       cwe: "CWE-200"
       category: "security"
 
+  - id: k8s-rolebinding-references-clusterrole
+    languages: [yaml]
+    severity: WARNING
+    message: |
+      RoleBinding references a ClusterRole (CWE-269).
+
+      While this is a valid Kubernetes pattern for namespace-scoping cluster-level
+      permissions, it deserves review to ensure the referenced ClusterRole does not
+      grant more permissions than intended for this namespace.
+
+      Remediation: Verify the referenced ClusterRole has appropriate permissions.
+      Consider creating a namespace-scoped Role if only specific permissions are needed.
+    patterns:
+      - pattern: |
+          kind: RoleBinding
+          ...
+          roleRef:
+            kind: ClusterRole
+            ...
+    metadata:
+      cwe: "CWE-269"
+      category: "security"
+
   # ==========================================================================
   # SECTION 3: KUBERNETES CONTAINER SECURITY
   # ==========================================================================
