@@ -4,7 +4,7 @@
 # Synced to all repos via security-config. Do not edit in target repos.
 
 language: "en-US"
-early_access: false
+early_access: true
 inheritance: true
 
 tone_instructions: "Review from line-level code quality to architectural design. Security-first. Be direct. Cite CWE/CVE IDs for security findings. Only flag actionable issues; no praise, no summaries."
