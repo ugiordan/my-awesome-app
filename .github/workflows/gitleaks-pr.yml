@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GITLEAKS_VERSION: "8.24.3"
+
 jobs:
   gitleaks:
     name: Secret scan
@@ -19,8 +22,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            gitleaks detect --redact --verbose \
+              --config=.gitleaks.toml \
+              --log-opts="--no-merges --first-parent ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            gitleaks detect --redact --verbose \
+              --config=.gitleaks.toml \
+              --log-opts="--no-merges --first-parent ${{ github.event.before }}..${{ github.sha }}"
+          fi
