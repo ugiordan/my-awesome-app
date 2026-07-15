@@ -1,0 +1,5 @@
+severity-threshold: high
+exclude-dirs:
+  - vendor
+  - node_modules
+  - test/fixtures
